@@ -39,3 +39,17 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local sqlite database
+local.db
+local.db-journal
+local.db-wal
+local.db-shm
+
+# local working notes (not committed)
+ASSIGNMENT.md
+assignment-prep.md
+flex.md
+CLAUDE.md
+AGENTS.md
+

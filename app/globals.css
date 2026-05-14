@@ -1,26 +1,80 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Light, neutral surface. The dashboard always renders light — this is
+     a property-management tool, not a content app. Operators scan all day,
+     pure black is hostile. */
+  --background: #fafaf9;   /* zinc-50 — gentle off-white page surface */
+  --surface: #ffffff;      /* card surface */
+  --foreground: #18181b;   /* zinc-900 — body text */
+  --foreground-muted: #71717a; /* zinc-500 — secondary text */
+  --border: #e4e4e7;       /* zinc-200 */
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
   --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-border: var(--border);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  /* Lock the vertical scrollbar lane in two ways so we never get a horizontal
+     layout shift when filter results change the page height:
+     1. overflow-y: scroll → always reserves the scrollbar (universal support)
+     2. scrollbar-gutter: stable → hides the scrollbar thumb when not needed,
+        on browsers that support it. Falls back gracefully where they don't. */
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Brief fade-in used by elements that should signal "I just changed" after
+   an async mutation. Keyed via React `key` to re-trigger on each change. */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 220ms ease-out;
+}
+
+/* Low-amplitude opacity pulse used to signal "settling" on surfaces that have
+   already flipped optimistically (badge) while the server confirms. Subtle on
+   purpose — it must read as "in flight", not as "broken/loading". */
+@keyframes busyPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.animate-busy-pulse {
+  animation: busyPulse 1.1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-busy-pulse {
+    animation: none;
+  }
 }
