@@ -2,96 +2,98 @@
 
 ## Approach
 
-I treated the dashboard as a tool a property operator uses **every day**, not a content site. That single framing drove every UI decision: pending count is the most prominent stat on the page, low-rated pending reviews surface naturally via the rating filter, "Approve" and "Flag" feel decisive (instant feedback, clear consequences), and empty states celebrate when something *good* happened ("No flagged reviews — nice work.").
+I built this as a tool someone uses every day, and that shaped most of the UI. Pending count sits at the top of the page. The rating filter surfaces low-rated pending reviews quickly. Approve and flag give immediate feedback. A flagged view with no results reads as good news.
 
-I built core requirements 1–5 in full, then layered stretch goals (sort, search, skeleton loading, mobile responsive) and one Vitest test suite for the pure filter logic. The architecture biases toward **Server Components first**, with thin client islands for interactivity.
+I started with the core flow (list, filter, approve, flag), then added sort, search, the loading skeleton, and responsive layout, plus a Vitest suite for the filter logic. Server Components handle data and layout. The filter row and the review card are the only client components.
 
-## Key decisions
+## State
 
-### State lives in the right place — never higher than it needs to be
+There's no client store. State falls into three categories, each with a natural home:
 
-I deliberately did **not** introduce a client-side store. Every piece of state lives in its natural home:
+- Reviews: read in a Server Component, written through a Server Action, refreshed with `revalidatePath`. One write path, automatic re-render.
+- Filters, search, sort: the URL, through `useSearchParams`. Views are shareable, the back button works, and the first paint is already filtered.
+- Per-card status, pending action, and error: `useOptimistic` and `useState`, scoped to the card. Mutations stay within a card, so the state stays there too.
 
-- **Server state** (the reviews array): Server Component + server action + `revalidatePath`. Single source of truth, automatic re-render on mutation, no manual sync.
-- **URL state** (filters, search, sort): `useSearchParams`. Views are shareable — "send me the link to flagged Berlin reviews" works. Back button is meaningful. First paint is already filtered (no flash of unfiltered content).
-- **Component-local state** (per-card optimistic status, pending action, toast, error): `useOptimistic` + `useState`. Each card owns its own UI state because mutations don't interact across cards. Lifting would be over-engineering.
+A Zustand store would have cost the URL shareability and added nothing at this size.
 
-A Zustand store would have actively *removed* the senior-level URL-shareability signal — the prep work flagged that as the top differentiator.
+## Exhaustive types
 
-### Types model states exhaustively
+`Review.status` is `pending | approved | flagged`. Every lookup keyed on it (labels, badge styles, consequence copy, radio styles) is declared `as const satisfies Record<ReviewStatus, X>`. Adding a status makes the compiler fail on every map at once, so none gets missed.
 
-`Review.status` is a discriminated string union (`pending | approved | flagged`). Every lookup table that maps from it (`STATUS_LABEL`, `STATUS_STYLES`, `STATUS_CONSEQUENCE`, `STATUS_TOAST_MESSAGE`, button modes) uses `as const satisfies Record<ReviewStatus, X>`. If a fourth status is added next sprint, the compiler fails on every map at once. Invalid states cannot be represented.
+## Optimistic writes
 
-### Mutations are optimistic with rollback
+The PATCH route is the public contract, and the dashboard goes through a Server Action. Both call `mutateReviewStatus`, so there's a single write path. The action runs in `startTransition` with `useOptimistic`, so the badge and status chips flip on click and settle when the server confirms.
 
-The PATCH endpoint is the public contract, but the dashboard goes through a server action (`updateReviewStatus`) that shares the same `mutateReviewStatus` function under the hood. One source of truth, two interfaces. The action runs inside `startTransition` with `useOptimistic` driving the UI — the badge, consequence line, and button state all flip the moment the user clicks, then settle when the server confirms. On failure, `useOptimistic` auto-reverts and an inline error appears.
+One thing I spent time on was keeping the copy in step with the server state. During the write the UI says "Publishing to property listing…". Once the write returns, it shows "Visible on property listing". The product effect is a server-side fact, so the UI waits for confirmation before stating it. On failure `useOptimistic` reverts and an inline error shows.
 
-I added a 400ms simulated latency to the action **in dev only** (`process.env.NODE_ENV !== "production"`). Without it the in-memory store mutates in ~1ms and you can't see the loading state — production would have real network latency and this practice repo should feel like production.
+I added 400ms of latency to the action in dev only. The write returns in about a millisecond otherwise, which hides the in-flight state. Production sets it to zero.
 
-### Mutual exclusivity is visual, not just semantic
+## Why the status control is a radiogroup
 
-When a review is approved, the Flag button goes **fully muted (zinc gray)**, not just "less highlighted." The current state owns the row. This was iteration: my first pass colored both buttons (just at different intensities), which read as "both kind of active." Real fix was three distinct button modes (`active` / `offer` / `muted`) instead of two.
+My first version used two toggle buttons. The problem was that "press to approve" and "already approved" looked too similar. `aria-pressed` has the right semantics but a weak visual signal. I moved to a two-option radiogroup. The selected radio reads as the current state, with a filled chip and a check. The unselected radio reads as an available action, with an outlined verb chip. A pending review leaves both unselected, and the row keeps its shape.
 
-### Empty states are context-aware
+Reset-to-pending became an "Undo" link on the consequence line. Undo belongs to the action that just happened, so it sits with that line. The keyboard model is roving tabindex with arrow-key selection, matching native radios.
 
-A single "no results" panel is fine; context-aware copy is better. `?status=flagged` returning zero is **good news** ("No flagged reviews — nice work.") and renders green. A multi-filter combo returning zero is a UX problem and stays neutral, nudging the operator to clear a filter. Three subtle product signals in one component.
+## Context-aware empty states
 
-### Layout shift was a real bug, properly diagnosed
+A single "no results" panel would have worked, but the zero cases mean different things. A flagged view with no matches is good news, so it renders green ("No flagged reviews — nice work."). A multi-filter combination with no matches is a dead end, so it stays neutral and prompts the operator to clear a filter.
 
-The cards moved sideways when filters narrowed the result set. My first guess was scrollbar gutter — wrong. A console diagnostic showed `<main>` itself shrinking from 896 → 795px when content got short, because it's a flex item that defaults to shrink-toward-content. Fix: `w-full` so `<main>` always takes 100% of body width, capped by `max-w-4xl`. Plus `overflow-y: scroll` + `scrollbar-gutter: stable` to lock the scrollbar lane for cross-browser stability.
+## A layout-shift bug
 
-### Accessibility, baked in
+The cards shifted sideways when a filter narrowed the list. I first suspected the scrollbar gutter, which was wrong. A console measurement showed `<main>` itself shrinking from 896px to 795px when the content got short. It's a flex item, and it was shrinking toward its content. Setting `w-full` made `<main>` fill the body up to `max-w-4xl`, and `overflow-y: scroll` with `scrollbar-gutter: stable` keeps the scrollbar lane fixed across browsers.
 
-- Semantic `<article>`, `<time dateTime>`, `<button>`-not-`<div>`
-- `aria-pressed` on toggle buttons, `aria-busy` while loading, `aria-labelledby` linking card to guest name
-- `role="status"` + `aria-live="polite"` on success toasts so screen readers announce changes without interruption
-- Star rating: visual stars + `aria-label="N out of 5 stars"` — color and shape are not the only signals
-- `prefers-reduced-motion` respected — animations disabled when the OS asks for it
-- Focus rings via `focus-visible:` not `focus:` — keyboard users see them, mouse users don't
+## Accessibility
 
-## What I'd do with more time
+- Semantic `<article>`, `<time dateTime>`, and real `<button>` elements for actions
+- `radiogroup` / `radio` / `aria-checked` for the status control, `aria-busy` during a write
+- The consequence line uses `role="status"` and `aria-live="polite"`, so screen readers announce changes
+- Star rating renders stars plus an `aria-label="N out of 5 stars"`, so the rating is available without colour
+- `prefers-reduced-motion` disables the animations
+- `focus-visible:` rings for keyboard focus
 
-- **Authentication + per-operator scoping** — currently all reviews are visible to every viewer
-- **Bulk actions** — multi-select cards + a sticky action bar for approve/flag in batch. This is where a Zustand store would finally be the right tool (cross-component selection state)
-- **Real persistence** — the in-memory store resets on server restart. SQLite + Drizzle, or a real DB
-- **Realtime updates** — Server-Sent Events from the API so two operators viewing the same dashboard see each other's actions
-- **More tests** — I covered the pure filter logic. With more time I'd add Playwright e2e for the approve/flag flow and a component test for the optimistic UI
-- **Telemetry** — `console.error` in the error boundary is a placeholder. Production would forward to Sentry/DataDog with the `error.digest`
+## With more time
+
+- Authentication and per-operator scoping. Every review is currently visible to every viewer.
+- Bulk actions: multi-select with a sticky action bar. Cross-card selection state is the first feature here that would justify a client store.
+- Realtime updates over SSE, so two operators on the same dashboard see each other's actions land.
+- More tests. The filter logic is covered. I'd add a Playwright run for the approve/flag flow and a component test for the optimistic UI.
+- Telemetry. The error boundary currently logs to the console. Production would forward to Sentry/DataDog with `error.digest`.
 
 ## Assumptions
 
-- **Operators manage 50–200 properties**, scanning the dashboard several times a day. Drove pending-count prominence and the "scan-first" card layout.
-- **Desktop-first.** Operators work at desks. Mobile is supported (filter row stacks, summary stats reflow) but not the primary canvas.
-- **English locale.** Date formatting uses `en-GB` (`13 May 2026`) — closer to the EU operator market the screenshots suggest. Would add an `i18n` boundary in production.
-- **Mock data is representative.** The seed deliberately includes obviously-concerning reviews (bedbugs, hair in bathroom, mislabeled non-smoking) so the "pending + low rating" surface story has something to show.
-- **Approval / flagging is a per-operator action**, not a vote or workflow. Single-step state transitions, no review-of-the-review.
+- Operators run 50–200 properties and check the dashboard several times a day. That drove the pending-first, scan-first layout.
+- Desktop-first. Mobile works (the filter row stacks, the stats reflow) but it's a secondary target.
+- en-GB dates (`13 May 2026`), since I had EU operators in mind. A production version would add an i18n boundary.
+- The seed includes some concerning reviews (bedbugs, hair in the bathroom, a mislabeled non-smoking unit) so the low-rating and pending path has something to show.
+- Approve and flag are a single per-operator action. There's no vote or multi-step workflow.
 
 ## Architecture map
 
 ```
 app/
-├── api/reviews/                 — public HTTP API (route handlers)
-│   ├── route.ts                 — GET collection
-│   ├── _data.ts                 — in-memory seed store
-│   └── [id]/route.ts            — PATCH single (validates, delegates to lib)
-├── actions/
-│   └── reviews.ts               — server action for dashboard mutations
+├── api/reviews/
+│   ├── route.ts            GET collection (delegates to lib)
+│   └── [id]/route.ts       PATCH single (validates id + status, delegates to lib)
+├── actions/reviews.ts      Server Action for dashboard mutations
 ├── lib/
-│   ├── reviews.ts               — getReviews + mutateReviewStatus (shared by API + action)
-│   ├── filters.ts               — parseFilters, applyFilters (pure, tested)
-│   └── filters.test.ts          — vitest unit tests (14 cases)
-├── types/
-│   └── review.ts                — Review, status union, display tokens
+│   ├── reviews.ts          getReviews + mutateReviewStatus (shared by API + action)
+│   ├── filters.ts          parseFilters, applyFilters (pure, tested)
+│   ├── filters.test.ts     14 Vitest cases
+│   └── db/
+│       ├── schema.ts       Drizzle table + status enum
+│       ├── client.ts       memoised libSQL/Drizzle singleton
+│       └── seed-data.ts    seed rows (mixed statuses, some concerning)
+├── types/review.ts         Review, status union, display tokens
 ├── components/
-│   ├── review-card.tsx          — card + inline actions (Client)
-│   ├── filters.tsx              — URL-driven filter row (Client)
-│   ├── summary-stats.tsx        — stats grid (Server)
-│   └── empty-state.tsx          — context-aware empty state (Server)
-├── page.tsx                     — Server Component, fetches + filters + renders
-├── error.tsx                    — route-level error boundary
-├── loading.tsx                  — Suspense fallback / skeleton
-├── layout.tsx                   — root layout, fonts, metadata
-└── globals.css                  — tokens, animations, scrollbar-gutter
+│   ├── review-card.tsx     card + radiogroup status control (Client)
+│   ├── filters.tsx         URL-driven filter row (Client)
+│   ├── summary-stats.tsx   stats grid (Server)
+│   └── empty-state.tsx     context-aware empty state (Server)
+├── page.tsx                fetch + filter + render (Server)
+├── error.tsx               route-level error boundary
+├── loading.tsx             Suspense skeleton
+├── layout.tsx              root layout, fonts, metadata
+└── globals.css             tokens, animations, scrollbar-gutter
 ```
 
-Public boundaries: components import from `lib/`, `types/`, `actions/`. The API's `_data.ts` is shared with `lib/reviews.ts` only — it's not a public symbol elsewhere.
+Components import from `lib/`, `types/`, and `actions/`. Only `lib/reviews.ts` and `scripts/setup-db.ts` reach into `lib/db/`.

@@ -46,10 +46,7 @@ local.db-journal
 local.db-wal
 local.db-shm
 
-# local working notes (not committed)
-ASSIGNMENT.md
-assignment-prep.md
-flex.md
+# local agent/config files (not committed)
 CLAUDE.md
 AGENTS.md
 

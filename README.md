@@ -1,54 +1,50 @@
 # Guest Review Dashboard
 
-A small, opinionated dashboard for short-stay property operators to triage guest reviews — approve them onto a public listing, or flag them to an operations team.
+A dashboard for short-stay property operators to triage guest reviews. They can approve a review onto the public listing or flag it for the operations team.
 
-Built as a focused study in modern Next.js architecture: **Server Components first, thin client islands for interactivity, URL-driven view state, and optimistic mutations with server-side revalidation.**
+I built it to work through one Next.js pattern end to end: Server Components for data and layout, client components limited to the interactive pieces, view state in the URL, and optimistic mutations with server revalidation.
 
-![Next.js](https://img.shields.io/badge/Next.js-16-black) ![React](https://img.shields.io/badge/React-19-149eca) ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6) ![Tailwind](https://img.shields.io/badge/Tailwind-4-38bdf8) ![Vitest](https://img.shields.io/badge/Vitest-passing-6e9f18)
+![Next.js](https://img.shields.io/badge/Next.js-16-black) ![React](https://img.shields.io/badge/React-19-149eca) ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6) ![Tailwind](https://img.shields.io/badge/Tailwind-4-38bdf8)
 
----
+## What it does
 
-## Why this exists
-
-Most "dashboard" demos optimise for surface area — many widgets, shallow interactions. This one optimises for the opposite: **one operator job, done well.** Pending count is the most prominent stat. Approve/Flag feel decisive. Empty states celebrate good outcomes ("No flagged reviews — nice work."). Views are shareable via URL.
+An operator opens the dashboard, sees how many reviews are waiting, filters down to the ones that matter (low rating, a given city, still pending), and approves or flags each one. Pending count sits at the top of the page because that's the number operators act on. Filtered views live in the URL, so a set like the flagged Berlin reviews is a link you can send someone.
 
 ## Stack
 
-- **Next.js 16** (App Router, async `searchParams`, Server Actions, `revalidatePath`)
-- **React 19** (`useOptimistic`, `useTransition`, Server Components)
-- **TypeScript 5** in strict mode (discriminated unions, `as const satisfies` for exhaustive maps)
-- **Tailwind CSS v4** (CSS-first `@theme`, no JS config)
-- **SQLite + Drizzle ORM** via libSQL — local file in dev, swap one env var for Turso in prod
-- **Vitest** for the pure filter logic
+- Next.js 16 with the App Router, async `searchParams`, Server Actions, and `revalidatePath`
+- React 19 with `useOptimistic`, `useTransition`, and Server Components
+- TypeScript 5 in strict mode, using discriminated unions and `as const satisfies` for exhaustive maps
+- Tailwind CSS v4 with a CSS-first `@theme` and no JS config
+- SQLite and Drizzle ORM over libSQL. A local file in dev, one env var away from Turso in prod
+- Vitest for the filter logic
 
 ## Getting started
 
 ```bash
 npm install
-npm run dev          # http://localhost:3000 — auto-runs migrations + seeds on first start
+npm run dev          # http://localhost:3000 (runs migrations + seeds on first start)
 npm test             # 14 unit tests
 npm run build        # production build
 ```
 
-The `predev` / `prebuild` / `pretest` hooks run `scripts/setup-db.ts`, which applies Drizzle migrations and seeds the `reviews` table if it's empty. Idempotent — running twice is a no-op. The local database file (`local.db`) is gitignored.
+The `predev`, `prebuild`, and `pretest` hooks run `scripts/setup-db.ts`, which applies the Drizzle migrations and seeds the `reviews` table when it's empty. It's idempotent, so a second run does nothing. The local database (`local.db`) is gitignored.
 
-**Deploying to Turso (or any libSQL host)**: set `DATABASE_URL=libsql://...` and `DATABASE_AUTH_TOKEN=...` — no code changes. The libSQL client URL is the only deployment seam.
+To deploy against Turso or another libSQL host, set `DATABASE_URL=libsql://...` and `DATABASE_AUTH_TOKEN=...`. The client URL is the only deployment seam, so no code changes are needed.
 
-## Architecture highlights
+## How state is split
 
-### State lives in the right place — never higher than it needs to be
+State falls into three categories, each with a natural home. There's no client store because nothing here needs to live above the component tree.
 
-| State | Home | Why |
+| State | Where it lives | Why |
 | --- | --- | --- |
-| Reviews collection | Server Component + Server Action + `revalidatePath` | Single source of truth, automatic re-render on mutation |
-| Filters / search / sort | URL (`useSearchParams`) | Shareable links, meaningful back button, no flash of unfiltered content |
-| Per-card optimistic status, toast, error | `useOptimistic` + `useState` | Mutations don't cross cards — lifting would be over-engineering |
+| Reviews collection | Server Component read, Server Action write, `revalidatePath` | One source of truth, re-renders on mutation |
+| Filters, search, sort | URL via `useSearchParams` | Shareable links, working back button, first paint already filtered |
+| Per-card optimistic status and error | `useOptimistic` and `useState` | Mutations stay within a card, so the state stays there too |
 
-A client store (Zustand/Redux) was deliberately **not** introduced. There is no piece of state in this app that needs to live above the component tree.
+## Status as an exhaustive type
 
-### Types model states exhaustively
-
-`Review.status` is a discriminated string union (`pending | approved | flagged`). Every display map uses:
+`Review.status` is `pending | approved | flagged`. Every lookup keyed on it is declared this way:
 
 ```ts
 const STATUS_LABEL = {
@@ -58,72 +54,70 @@ const STATUS_LABEL = {
 } as const satisfies Record<ReviewStatus, string>;
 ```
 
-Add a fourth status next sprint, and the compiler fails on every map at once. Invalid states cannot be represented.
+Adding a fourth status makes the compiler fail on every map at once, so none gets missed. Invalid states stay unrepresentable.
 
-### Mutations are optimistic with rollback
+## Optimistic mutations
 
-The PATCH endpoint is the public contract. The dashboard goes through a Server Action that shares the same `mutateReviewStatus` function under the hood — **one source of truth, two interfaces**. The action runs inside `startTransition` with `useOptimistic` driving the UI: badge, consequence line, and button mode all flip instantly, then settle when the server confirms. On failure, `useOptimistic` auto-reverts and an inline error appears.
+The PATCH route and the dashboard's Server Action both call `mutateReviewStatus`, so the HTTP API and the UI stay in sync. The action runs inside a transition with `useOptimistic`, so the badge and status chips flip as soon as you click.
 
-A 400ms simulated latency is added **in dev only** so the loading state is actually visible.
+The copy tracks the server state. During a write the UI shows "Approving…" and "Publishing to property listing…". Once the server confirms, it switches to "Visible on property listing". The product effect is a server-side fact, so the UI waits for confirmation before stating it. If the write fails, `useOptimistic` reverts and an inline error appears.
 
-### Mutual exclusivity is visual, not just semantic
+Dev adds 400ms of artificial latency so the in-flight state is visible. Production sets it to zero.
 
-Approve and Flag are mutually exclusive states, so the buttons render in one of three modes:
+## The status control is a radiogroup
 
-- `active` — solid colour, currently selected
-- `offer` — outlined, available action
-- `muted` — flat grey, **not available right now**
+Approve and Flag are mutually exclusive, so the control is a two-option radiogroup. My first version used two toggle buttons, but "press to approve" and "already approved" looked too similar. With radios, the selected option reads as the current state (a filled tinted chip with a check) and the unselected option reads as an available action (an outlined verb chip). When the review is pending, both options sit unselected and the row keeps its shape.
 
-When a review is approved, the Flag button doesn't just dim — it goes fully grey. The current state owns the row.
+Reset-to-pending is an "Undo" link on the consequence line. Undo belongs to the action that just happened, so it sits with that line. The keyboard model is roving tabindex with arrow-key selection, matching native radios.
 
-### Accessibility baked in
+## Accessibility
 
-- Semantic `<article>`, `<time dateTime>`, `<button>`-not-`<div>`
-- `aria-pressed` on toggles, `aria-busy` while loading, `aria-labelledby` linking card to guest name
-- `role="status"` + `aria-live="polite"` on success toasts
-- Star rating: visual stars + `aria-label="N out of 5 stars"` — colour and shape are never the only signals
-- `prefers-reduced-motion` respected — animations disabled when the OS asks
-- `focus-visible:` not `focus:` — keyboard users see focus rings, mouse users don't
+- Semantic `<article>`, `<time dateTime>`, and real `<button>` elements for actions
+- `radiogroup` / `radio` / `aria-checked` for the status control, `aria-busy` during a write
+- The consequence line uses `role="status"` and `aria-live="polite"`, so screen readers announce changes
+- Star rating renders stars plus an `aria-label="N out of 5 stars"`, so the rating is available without colour
+- `prefers-reduced-motion` disables the animations
+- `focus-visible:` rings for keyboard focus
 
 ## Project layout
 
 ```
 app/
 ├── api/reviews/             public HTTP API (GET collection, PATCH item)
-├── actions/reviews.ts       server action for dashboard mutations
+├── actions/reviews.ts       Server Action for dashboard mutations
 ├── lib/
 │   ├── reviews.ts           getReviews + mutateReviewStatus (shared by API + action)
 │   ├── filters.ts           parseFilters, applyFilters (pure, tested)
 │   ├── filters.test.ts      14 Vitest cases
 │   └── db/
-│       ├── schema.ts        Drizzle table definition with branded enum types
+│       ├── schema.ts        Drizzle table + status enum
 │       ├── client.ts        memoised libSQL/Drizzle singleton
-│       └── seed-data.ts     hand-crafted seed (mixed statuses + concerning content)
+│       └── seed-data.ts     seed rows (mixed statuses, some concerning)
 ├── types/review.ts          Review, status union, display tokens
 ├── components/
-│   ├── review-card.tsx      card + inline actions (Client)
+│   ├── review-card.tsx      card + radiogroup status control (Client)
 │   ├── filters.tsx          URL-driven filter row (Client)
 │   ├── summary-stats.tsx    stats grid (Server)
 │   └── empty-state.tsx      context-aware empty state (Server)
-├── page.tsx                 fetches + filters + renders (Server)
+├── page.tsx                 fetch + filter + render (Server)
 ├── error.tsx                route-level error boundary
-├── loading.tsx              Suspense fallback / skeleton
+├── loading.tsx              Suspense skeleton
 ├── layout.tsx               root layout, fonts, metadata
 └── globals.css              tokens, animations, scrollbar-gutter
 
 drizzle/                     generated SQL migrations (committed)
-scripts/setup-db.ts          migrate + seed-if-empty (run by pre-* hooks)
+scripts/setup-db.ts          migrate + seed-if-empty (run by the pre-* hooks)
 drizzle.config.ts            drizzle-kit config
 ```
 
-Public boundaries: components import from `lib/`, `types/`, `actions/`. Only `lib/reviews.ts` and `scripts/setup-db.ts` touch `lib/db/` — the rest of the app is storage-agnostic.
+Components import from `lib/`, `types/`, and `actions/`. Only `lib/reviews.ts` and `scripts/setup-db.ts` reach into `lib/db/`, so the rest of the app stays storage-agnostic.
 
 ## What I'd add next
 
-- **Authentication + per-operator scoping** — all reviews are currently visible to every viewer
-- **Bulk actions** — multi-select cards + sticky action bar. This is where a client store would finally earn its keep (cross-component selection state).
-- **Realtime sync** — SSE so two operators viewing the dashboard see each other's actions land.
-- **More tests** — Playwright e2e for the approve/flag flow, component test for the optimistic UI.
-- **Telemetry** — wire the error boundary to Sentry/DataDog with the `error.digest`.
+- Authentication and per-operator scoping. Every review is currently visible to every viewer.
+- Bulk actions: multi-select with a sticky action bar. Cross-card selection state is the first feature here that would justify a client store.
+- Realtime sync over SSE, so two operators watching the dashboard see each other's actions land.
+- More tests: a Playwright run for the approve/flag flow and a component test for the optimistic UI.
+- Telemetry: wire the error boundary to Sentry/DataDog using `error.digest`.
 
-See [`NOTES.md`](./NOTES.md) for the longer write-up: decisions, tradeoffs, and a few bugs caught along the way.
+See [`NOTES.md`](./NOTES.md) for the longer write-up on the decisions and a layout bug that took a second look to pin down.
